@@ -2,46 +2,45 @@ import urllib2
 import re
 import httplib
 import time
-import sqlite3
+from ProxyParser import ProxyParser, DbConnector
+import socket
 
 
 class AzLyrics:
-    __processed = set()
-    __unprocessed = set()
-    __proxyList = set()
-    __dbConnetion = ""
+    __processed = list()
+    __unprocessed = list()
+    __proxyList = list()
+    __conn = ""
     __dbPath = 'AzLyrics.db'
-    __proxyFileName = "proxylist"
+    __pagesTable = "Pages"
+    __proxyParser = ProxyParser()
 
     # Open DB and get Processed and unprocessed URLs from it. Also prepare proxylist
     def __init__(self):
+        self.__conn = DbConnector.Instance().handle()
         self.fillProxyList()
-        self.__dbConnetion = sqlite3.connect(self.__dbPath)
 
-        cur = self.__dbConnetion.cursor()
-        cur.execute("SELECT url FROM ProcessedUrls")
+        cur = self.__conn.cursor()
+        cur.execute("SELECT url, isProcessed FROM " + self.__pagesTable)
         rows = cur.fetchall()
         for row in rows:
-            self.__processed.add(row)
+            if row[1] == 1:
+                self.__processed.append(row[0])
+            else:
+                self.__unprocessed.append(row[0])
 
-        cur.execute("SELECT url FROM UnprocessedUrls")
-        rows = cur.fetchall()
-        for row in rows:
-            self.__unprocessed.add(row[0])
+        print("--------------------------------------------")
+        print("Processed URLs count: ", len(self.__processed))
+        print("Unprocessed URLs count: ", len(self.__unprocessed))
+        print("--------------------------------------------")
 
-        print("Processed URLs: ", self.__processed)
-        print("Unprocessed URLs: ", self.__unprocessed)
 
-    # Open already prepared file and get all proxy servers from it
     def fillProxyList(self):
-        file = open(self.__proxyFileName, "r")
-        for line in file:
-            self.__proxyList.add(line[:-1])
-        file.close()
-        print(self.__proxyList)
+        self.__proxyList = self.__proxyParser.getProxy()
+
 
     # Parse lyrics from raw html data
-    def parseLyrics(self, html):
+    def __parseLyrics(self, html):
         startSong = "<!-- Usage of azlyrics.com content by any third-party lyrics provider is prohibited by our licensing agreement. Sorry about that. -->"
         endSong = "</div>"
 
@@ -56,7 +55,7 @@ class AzLyrics:
         return song
 
     # Parse author from raw html data
-    def parseAuthor(self, html):
+    def __parseAuthor(self, html):
         authorAnchor = "ArtistName = \""
         startPos = html.find(authorAnchor)
         if (startPos == -1):
@@ -68,7 +67,7 @@ class AzLyrics:
         return author
 
     # Parse name of song from raw html data
-    def parseSongName(self, html):
+    def __parseSongName(self, html):
         songNameAnchor = "SongName = \""
         startPos = html.find(songNameAnchor)
         if (startPos == -1):
@@ -95,7 +94,7 @@ class AzLyrics:
 
         newUrl = set()
         for url in urls:
-            if url.find(base) == -1:
+            if url.find(base) == -1 and url.find("http://") == -1:
                 newUrl.add(base + url[1:])
             else:
                 newUrl.add(url[1:])
@@ -120,12 +119,11 @@ class AzLyrics:
         newUrl = set()
         for url in urls:
             url = url[3:]
-            if url.find(base) == -1:
+            if url.find(base) == -1 and url.find("http://") == -1:
                 newUrl.add(base + url)
             else:
                 newUrl.add(url)
 
-        # print(newUrl)
         return newUrl
 
     # Parse needed URLs from raw html data
@@ -140,97 +138,120 @@ class AzLyrics:
 
     # Main loop of parsing site. It takes next URL from unprocessed list and processing it.
     def processUrls(self):
+        conn = self.__conn
         i = 0
+
+        # timeout in seconds
+        timeout = 20
+        socket.setdefaulttimeout(timeout)
+
         while len(self.__unprocessed) > 0:
             if i >= len(self.__proxyList):
                 i = 0
-                time.sleep(10) # delays for 5 seconds
+                # print("]]]]]]]]------SLEEP FOR 10 SECOND-----[[[[[[[[[[[[[[")
+                # time.sleep(timeout) # delays for N seconds
 
-            proxy = urllib2.ProxyHandler({'http': list(self.__proxyList)[i]})
+            while len(self.__proxyList) == 0:
+                print("Proxy list is empty. Trying to load fresh proxies")
+                self.fillProxyList()
+                if len(self.__proxyList) == 0:
+                    print("PROXY LOADING FAILED: sleep for 5 min.")
+                    time.sleep(300)  # sleep 5 seconds and try again
+
+            if i == 0:
+                self.fillProxyList()
+                print(""
+                      "Proxies count: ", len(self.__proxyList))
+            # else:
+            #     time.sleep(2) # delays for N seconds
+
+
+            proxy = urllib2.ProxyHandler({'http': self.__proxyList[i]})
             opener = urllib2.build_opener(proxy)
             urllib2.install_opener(opener)
 
-            currUrl = self.__unprocessed.pop()
-            print(currUrl)
+            timestamp = time.strftime("%H:%M:%S")
+            currUrl = self.__unprocessed[i]
+            print("[" + timestamp + "] #" + str(i) + " Start processing URL: ", currUrl)
             html = ""
+            isBadProxy = False
 
             try:
+                print("--------Current proxy: ", self.__proxyList[i])
+                # print("---------- Start loading ------------")
                 response = urllib2.urlopen(currUrl)
+                # print("---------- Stop loading ------------")
                 html = response.read()
             except urllib2.HTTPError, e:
-                needChangeProxy = True
                 print('HTTPError = ' + str(e.code))
-            except urllib2.URLError, e:
-                needChangeProxy = True
-                print('URLError = ' + str(e.reason))
-            except httplib.HTTPException, e:
-                needChangeProxy = True
-                print('HTTPException', e.message)
+                if e.code != 404:
+                    isBadProxy = True
+                else:
+                    i += 1
+                    print("URL REMOVED BUT NOT MARKED AS PROCESSED ---->>>>")
+                    self.__unprocessed.remove(currUrl)
+                    continue
             except Exception:
                 print('generic exception: ')
-                needChangeProxy = True
+                isBadProxy = True
 
-            if needChangeProxy == True:
-                if len(self.__proxyList) == 0:
-                    print("Need more proxy!!!")
-                    return
-                else:
-                    print("Need remove item #", i)
+            if isBadProxy == True:
+                print("--==BAD PROXY==--")
+                currProxy = self.__proxyList[i]
+                self.__proxyParser.markAsBad(currProxy)
+                self.__proxyList.remove(currProxy)
 
-                # proxy = urllib2.ProxyHandler({'http': self.__proxyList.pop()})
-                # opener = urllib2.build_opener(proxy)
-                # urllib2.install_opener(opener)
-                # needChangeProxy = False
+                continue #try to process this URL again
+
+            self.__unprocessed.remove(currUrl)
+            self.__processed.append(currUrl)
+            conn.execute("UPDATE "+ self.__pagesTable +" SET isProcessed = 1 WHERE url = '"+currUrl+"'")
+
+            if html == "":
+                print("Page not loaded! Skip it and move forward ->")
+                continue
 
             urls = self.parseUrls(html)
-            author = self.parseAuthor(html)
-            songName = self.parseSongName(html)
-            lyrics = self.parseLyrics(html)
+            author = self.__parseAuthor(html)
+            songName = self.__parseSongName(html)
+            lyrics = self.__parseLyrics(html)
 
-            self.__processed.add(currUrl)
-            self.__dbConnetion.execute("INSERT INTO ProcessedUrls (url) VALUES ('"+str(currUrl)+"')")
-            self.__dbConnetion.execute("DELETE ProcessedUrls WHERE url = '"+str(currUrl)+"'")
-
-
-
+            unique = 0
             for url in urls:
-                if url not in self.__processed:
-                    self.__unprocessed.add(url)
-                    self.__dbConnetion.execute("INSERT INTO UnprocessedUrls (url) VALUES ('"+url+"')")
-
+                if url not in self.__processed and url not in self.__unprocessed:
+                    self.__unprocessed.append(url)
+                    self.__conn.execute("INSERT INTO "+ self.__pagesTable +" (url, isProcessed) "
+                                                                           "VALUES ('" + url + "', 0)")
+                    unique += 1
+            print("Found " + str(len(urls)) + " unique URL(s)")
 
             i += 1
 
-
-            if i % 10 == 0:
-                print("URL # ", i)
-
             if author != "" and songName != "" and lyrics != "":
-                print("Author: ", author)
-                print("Song name: ", songName)
-                print("Lyrics: ", lyrics)
-                print(urls)
+                # print("Author: ", author)
+                # print("Song name: ", songName)
+                # print("Lyrics: ", lyrics)
+                # print(urls)
+
+                print("!!!Lyrics found!!!")
 
                 # add data to sqlite
                 request = 'insert into Lyrics (band, song, lyrics) values ("'+author+'","'+songName+'","'+lyrics+'")'
-                self.__dbConnetion.execute(request)
+                conn.execute(request)
 
-            self.__dbConnetion.commit()  # Update all data
+            conn.commit()
 
     def firstInit(self):
         base = "http://www.azlyrics.com/"
         letters = 'abcdefghijklmnopqrstuvwxyz'
         for char in letters:
             url = base + char + ".html"
-            self.__dbConnetion.execute("INSERT INTO UnprocessedUrls (url) VALUES ('"+url+"')")
-        self.__dbConnetion.commit()
+            self.__conn.execute("INSERT INTO UnprocessedUrls (url) VALUES ('" + url + "')")
+        self.__conn.commit()
 
 
 def main():
     lyrics = AzLyrics()
-    # lyrics.firstInit()
-    # lyrics.fillProxyList();
-    # lyrics.initUnprocessed();
     lyrics.processUrls()
 
 
