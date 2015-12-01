@@ -31,10 +31,16 @@ class AzLyrics:
     def __init__(self):
         self.__conn = DbConnector.Instance().handle()
         # self.fillProxyList()
+        self.getPages()
 
+    def getPages(self):
         cur = self.__conn.cursor()
-        cur.execute("SELECT url, isProcessed FROM " + self.__pagesTable)
+        cur.execute("SELECT url, isProcessed FROM " + self.__pagesTable + " WHERE isProcessed = 0 LIMIT 25")
         rows = cur.fetchall()
+
+        # clear before using
+        self.__unprocessed = list()
+        self.__processed = list()
 
         for row in rows:
             if row[1] == 0 or row[1] == None:
@@ -80,12 +86,13 @@ class AzLyrics:
             if i >= len(self.__proxyList):
                 i = 0
 
-            if i % 50 == 0:
-                self.fillProxyList()
-                print("Proxies count: ", len(self.__proxyList))
-
             if j >= len(self.__unprocessed):
                 j = 0
+
+            if len(self.__unprocessed) <= 1:
+                self.getPages()
+                self.fillProxyList()
+                print("Proxies count: ", len(self.__proxyList))
 
             while len(self.__proxyList) == 0:
                 print("Proxy list is empty. Trying to load fresh proxies")
@@ -178,13 +185,18 @@ class AzLyrics:
 
         self.__lock.acquire()
         for url in urls:
-            if url not in self.__processed and url not in self.__unprocessed:
-                self.__unprocessed.append(url)
-                conn.execute("INSERT INTO "+ self.__pagesTable +" (url, isProcessed) "
-                                                                       "VALUES ('" + url + "', 0)")
-                unique += 1
+            try:
+                if url not in self.__processed and url not in self.__unprocessed:
+                    self.__unprocessed.append(url)
+                    conn.execute("INSERT INTO "+ self.__pagesTable +" (url, isProcessed) "
+                                                                           "VALUES ('" + url + "', 0)")
+                    unique += 1
+            except Exception:
+                print("URL ", url, " already exists in DB")
+
         self.__lock.release()
         print("Found " + str(len(urls)) + " unique URL(s)")
+
 
     def insertLyrics(self, author, songName, lyrics):
         if author == "" or songName == "" or lyrics == "":

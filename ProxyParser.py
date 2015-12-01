@@ -182,7 +182,7 @@ class ProxyParser:
 
             # <tr><td>152.2.81.209</td><td>8080</td>
             proxies = re.findall(r'<tr><td>(([0-9]{1,3}\.){3}[0-9]{1,3}</td><td>[0-9]{1,4})', html)
-            print(proxies)
+            # print(proxies)
 
             parsedProxy = set()
             delimiter = "</td><td>"
@@ -216,10 +216,13 @@ class ProxyParser:
             parsedProxy = set()
             delimiter = '"'
             for data in proxies:
-                ip = data[:data.find(delimiter)]
-                port = int(data[data.rfind(delimiter)+1:], 16)
-                url = ip + ":" + str(port)
-                parsedProxy.add(url)
+                try:
+                    ip = data[:data.find(delimiter)]
+                    port = int(data[data.rfind(delimiter)+1:], 16)
+                    url = ip + ":" + str(port)
+                    parsedProxy.add(url)
+                except Exception:
+                    print("---Something wrong with ["+data+"]")
             # print(parsedProxy)
 
             print(site, " : Parsed "+ str(len(parsedProxy))+" URL(s)")
@@ -261,5 +264,5 @@ def main():
 
     # print("TROLOL: ", proxyList)
 
-# main()
+main()
 
