@@ -69,7 +69,7 @@ class ProxyParser:
     __conn = ""
     __dbName = 'AzLyrics.db'
     __proxyTableName = "Proxy"
-    __proxySite = "http://xseo.in/freeproxy"
+    # __proxySite = "http://xseo.in/freeproxy"
     data = dict(submit=u"Показать по 150 прокси на странице")
 
     def __init__(self):
@@ -77,32 +77,11 @@ class ProxyParser:
         self.__conn = DbConnector.Instance().handle()
         # print("ProxyParser conn: ", self.__conn)
 
-    # PARSE proxy from raw page
-    def __parseProxyList(self, html):
-        # print("ProxyParser: Parsing raw page")
-        firstAnchor = '<table BORDER=0 CELLPADDING=0 CELLSPACING=0 width="100%" height="100%" style=\'border:0px\'>'
-        secondAnchor = "</form>"
-
-        pos = html.find(firstAnchor)
-        if pos == -1:
-            print("First anchor not found")
-            return set()
-        html = html[pos:html.find(secondAnchor, pos)]
-        # print(html)
-
-        proxies = re.findall(r'<font class=cls1>((\d{1,3}\.){3}\d{1,3}:\d{1,4})', html)
-
-        parsedProxy = set()
-        for url in proxies:
-            parsedProxy.add(url[0])
-
-        print("Parsed "+ str(len(parsedProxy))+" URL(s)")
-        # print(parsedProxy)
-        return parsedProxy
 
     # Update table with proxies
     def __processProxyList(self, freshProxyList):
-        # print("ProxyParser: Insert fresh proxies to table")
+        if (len(freshProxyList) == 0):
+            return
 
         cur = self.__conn.cursor()
         cur.execute("SELECT url FROM " + self.__proxyTableName)
@@ -111,9 +90,6 @@ class ProxyParser:
         proxyList = set()
         for row in rows:
             proxyList.add(row[0])
-
-        # print("Count of proxy in table: ", len(proxyList))
-        print("<<<<<<<<<<< Count of fresh proxy: ", len(freshProxyList))
 
         counter = 0
         for url in freshProxyList:
@@ -125,34 +101,140 @@ class ProxyParser:
                 continue
 
         self.__conn.commit()  # Update all data
-        print("*************Added " + str(counter) + " fresh proxy URL(s)**********************")
+        if counter > 0:
+            print("*************Added " + str(counter) + " fresh proxy URL(s)**********************")
+        else:
+            print("*************Have no fresh proxy*************")
 
-    # Load html page from internet
-    def loadProxy(self):
-        # print("ProxyParser: Load page with proxy")
+
+    # PARSE proxy from raw page
+    def parseXseoIn(self):
+        site = "http://xseo.in/freeproxy"
 
         try:
-            response = urllib2.urlopen(self.__proxySite)
+            response = urllib2.urlopen(site)
             html = response.read()
 
-            # html = ""
-            # file = open("proxy.html", "r")
-            # for line in file:
-            #     html += line
-            # file.close()
+            firstAnchor = '<table BORDER=0 CELLPADDING=0 CELLSPACING=0 width="100%" height="100%" style=\'border:0px\'>'
+            secondAnchor = "</form>"
 
+            pos = html.find(firstAnchor)
+            if pos == -1:
+                print("First anchor not found")
+                return set()
+            html = html[pos:html.find(secondAnchor, pos)]
             # print(html)
-            urls = self.__parseProxyList(html)
-            if (len(urls) > 0):
-                self.__processProxyList(urls)
+
+            proxies = re.findall(r'<font class=cls1>((\d{1,3}\.){3}\d{1,3}:\d{1,4})', html)
+
+            parsedProxy = set()
+            for url in proxies:
+                parsedProxy.add(url[0])
+
+            print(site, " : Parsed "+ str(len(parsedProxy))+" URL(s)")
+            self.__processProxyList(parsedProxy)
+
         except Exception:
             print('...EXCEPTION ON PROXY LOADING...')
+            # print(parsedProxy)
+            # return parsedProxy
 
-    #
+
+
+    def ParseProxyListOrg(self):
+        site = "https://proxy-list.org/english/index.php"
+        try:
+            response = urllib2.urlopen(site)
+            html = response.read()
+
+            firstAnchor = '<div class="table-wrap">'
+            secondAnchor = '<div class="table-menu">'
+
+            pos = html.find(firstAnchor)
+            if pos == -1:
+                print("First anchor not found")
+                return set()
+            html = html[pos:html.find(secondAnchor, pos)]
+            # print(html)
+
+            proxies = re.findall(r'<li class="proxy">((\d{1,3}\.){3}\d{1,3}:\d{1,4})', html)
+            # print(proxies)
+
+            parsedProxy = set()
+            for url in proxies:
+                parsedProxy.add(url[0])
+
+            print(site, " : Parsed "+ str(len(parsedProxy))+" URL(s)")
+            self.__processProxyList(parsedProxy)
+
+        except Exception:
+            print('Proxy-list.org loading proxy exception')
+
+
+    def ParseSslProxies(self):
+        # the same pages
+        site = "http://www.sslproxies.org/" #, "https://www.us-proxy.org/")
+
+        # for site in sites:
+        try:
+            response = urllib2.urlopen(site)
+            html = response.read()
+
+            # <tr><td>152.2.81.209</td><td>8080</td>
+            proxies = re.findall(r'<tr><td>(([0-9]{1,3}\.){3}[0-9]{1,3}</td><td>[0-9]{1,4})', html)
+            print(proxies)
+
+            parsedProxy = set()
+            delimiter = "</td><td>"
+            for rawdata in proxies:
+                data = rawdata[0]
+                pos = data.find(delimiter)
+                if pos == -1:
+                    continue
+
+                url = data[:pos] + ":" + data[pos+len(delimiter):]
+                parsedProxy.add(url)
+            # print(parsedProxy)
+            print(site, " : Parsed "+ str(len(parsedProxy))+" URL(s)")
+            self.__processProxyList(parsedProxy)
+
+        except Exception:
+            print(site, ' loading proxy exception')
+
+
+    def ParseGatherproxy(self):
+        site = "http://www.gatherproxy.com/"
+
+        try:
+            response = urllib2.urlopen(site)
+            html = response.read()
+            # print(html)
+
+            proxies = re.findall(r'"PROXY_IP":"(.+)","PROXY_REFS"', html)
+            # print(proxies)
+
+            parsedProxy = set()
+            delimiter = '"'
+            for data in proxies:
+                ip = data[:data.find(delimiter)]
+                port = int(data[data.rfind(delimiter)+1:], 16)
+                url = ip + ":" + str(port)
+                parsedProxy.add(url)
+            # print(parsedProxy)
+
+            print(site, " : Parsed "+ str(len(parsedProxy))+" URL(s)")
+            self.__processProxyList(parsedProxy)
+
+        except Exception:
+            print(site, ' loading proxy exception')
+
     def getProxy(self):
         # print("ProxyParser: Request for proxies")
 
-        self.loadProxy()
+        self.ParseProxyListOrg()
+        self.parseXseoIn()
+        self.ParseSslProxies()
+        self.ParseGatherproxy()
 
         # Select data
         cur = self.__conn.cursor()
@@ -179,5 +261,5 @@ def main():
 
     # print("TROLOL: ", proxyList)
 
-main()
+# main()
 
