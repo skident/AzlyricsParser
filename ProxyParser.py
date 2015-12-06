@@ -5,6 +5,7 @@ import re
 import httplib
 import time
 import sqlite3
+import threading
 
 
 class Singleton:
@@ -46,6 +47,7 @@ class Singleton:
     def __instancecheck__(self, inst):
         return isinstance(inst, self._decorated)
 
+
 @Singleton
 class DbConnector:
     __dbConnetion = ""
@@ -65,25 +67,34 @@ class DbConnector:
     def handle(self):
         return self.__dbConnetion
 
-class ProxyParser:
+
+# class ProxyParser(threading.Thread):
+class ProxyParser():
     __conn = ""
+    __threadconn = ""
     __dbName = 'AzLyrics.db'
     __proxyTableName = "Proxy"
+    __locker = ""
     # __proxySite = "http://xseo.in/freeproxy"
-    data = dict(submit=u"Показать по 150 прокси на странице")
+    # data = dict(submit=u"Показать по 150 прокси на странице")
 
-    def __init__(self):
+    # def __init__(self):
+        # threading.Thread.__init__(self)
+        # self.__locker = locker
+
+
         # print("ProxyParser.__init__()")
-        self.__conn = DbConnector.Instance().handle()
+        # self.__conn = DbConnector.Instance().handle()
         # print("ProxyParser conn: ", self.__conn)
 
 
     # Update table with proxies
-    def __processProxyList(self, freshProxyList):
+    def __processProxyList(self, freshProxyList, conn):
+
         if (len(freshProxyList) == 0):
             return
 
-        cur = self.__conn.cursor()
+        cur = conn.cursor()
         cur.execute("SELECT url FROM " + self.__proxyTableName)
         rows = cur.fetchall()
 
@@ -94,13 +105,13 @@ class ProxyParser:
         counter = 0
         for url in freshProxyList:
             try:
-                self.__conn.execute("INSERT INTO Proxy (url, isGood) VALUES ('"+url+"', 1)")
+                conn.execute("INSERT INTO Proxy (url, isGood) VALUES ('"+url+"', 1)")
                 counter += 1
             except Exception:
                 # print('Can\'t insert')
                 continue
 
-        self.__conn.commit()  # Update all data
+        conn.commit()  # Update all data
         if counter > 0:
             print("*************Added " + str(counter) + " fresh proxy URL(s)**********************")
         else:
@@ -110,6 +121,7 @@ class ProxyParser:
     # PARSE proxy from raw page
     def parseXseoIn(self):
         site = "http://xseo.in/freeproxy"
+        parsedProxy = set()
 
         try:
             response = urllib2.urlopen(site)
@@ -121,28 +133,25 @@ class ProxyParser:
             pos = html.find(firstAnchor)
             if pos == -1:
                 print("First anchor not found")
-                return set()
+                return parsedProxy
             html = html[pos:html.find(secondAnchor, pos)]
             # print(html)
 
             proxies = re.findall(r'<font class=cls1>((\d{1,3}\.){3}\d{1,3}:\d{1,4})', html)
 
-            parsedProxy = set()
             for url in proxies:
                 parsedProxy.add(url[0])
 
-            print(site, " : Parsed "+ str(len(parsedProxy))+" URL(s)")
-            self.__processProxyList(parsedProxy)
-
         except Exception:
             print('...EXCEPTION ON PROXY LOADING...')
-            # print(parsedProxy)
-            # return parsedProxy
 
+        return parsedProxy
 
 
     def ParseProxyListOrg(self):
         site = "https://proxy-list.org/english/index.php"
+        parsedProxy = set()
+
         try:
             response = urllib2.urlopen(site)
             html = response.read()
@@ -160,31 +169,26 @@ class ProxyParser:
             proxies = re.findall(r'<li class="proxy">((\d{1,3}\.){3}\d{1,3}:\d{1,4})', html)
             # print(proxies)
 
-            parsedProxy = set()
             for url in proxies:
                 parsedProxy.add(url[0])
-
-            print(site, " : Parsed "+ str(len(parsedProxy))+" URL(s)")
-            self.__processProxyList(parsedProxy)
 
         except Exception:
             print('Proxy-list.org loading proxy exception')
 
+        return parsedProxy
+
 
     def ParseSslProxies(self):
-        # the same pages
         site = "http://www.sslproxies.org/" #, "https://www.us-proxy.org/")
+        parsedProxy = set()
 
-        # for site in sites:
         try:
             response = urllib2.urlopen(site)
             html = response.read()
 
             # <tr><td>152.2.81.209</td><td>8080</td>
             proxies = re.findall(r'<tr><td>(([0-9]{1,3}\.){3}[0-9]{1,3}</td><td>[0-9]{1,4})', html)
-            # print(proxies)
 
-            parsedProxy = set()
             delimiter = "</td><td>"
             for rawdata in proxies:
                 data = rawdata[0]
@@ -194,26 +198,23 @@ class ProxyParser:
 
                 url = data[:pos] + ":" + data[pos+len(delimiter):]
                 parsedProxy.add(url)
-            # print(parsedProxy)
-            print(site, " : Parsed "+ str(len(parsedProxy))+" URL(s)")
-            self.__processProxyList(parsedProxy)
 
         except Exception:
             print(site, ' loading proxy exception')
 
+        return parsedProxy
+
 
     def ParseGatherproxy(self):
         site = "http://www.gatherproxy.com/"
+        parsedProxy = set()
 
         try:
             response = urllib2.urlopen(site)
             html = response.read()
-            # print(html)
 
             proxies = re.findall(r'"PROXY_IP":"(.+)","PROXY_REFS"', html)
-            # print(proxies)
 
-            parsedProxy = set()
             delimiter = '"'
             for data in proxies:
                 try:
@@ -223,26 +224,87 @@ class ProxyParser:
                     parsedProxy.add(url)
                 except Exception:
                     print("---Something wrong with ["+data+"]")
-            # print(parsedProxy)
-
-            print(site, " : Parsed "+ str(len(parsedProxy))+" URL(s)")
-            self.__processProxyList(parsedProxy)
 
         except Exception:
             print(site, ' loading proxy exception')
 
+        return parsedProxy
+
+
+    def ParseHideMyIp(self):
+        site = "https://www.hide-my-ip.com/proxylist.shtml"
+        parsedProxy = set()
+
+        try:
+            response = urllib2.urlopen(site)
+            html = response.read()
+
+            proxies = re.findall(r'{"i":"(.+)","c"', html)
+
+            delimiter = '","p":"'
+            for data in proxies:
+                try:
+                    pos = data.find(delimiter)
+                    ip = data[:pos]
+                    port = data[pos+len(delimiter):]
+                    url = ip + ":" + port
+                    # print(url)
+
+                    parsedProxy.add(url)
+                except Exception:
+                    print("---Something wrong with [" + data + "]")
+        except Exception:
+            print(site, ' loading proxy exception')
+
+        return parsedProxy
+
+
+
+    # def run(self):
+    def parse_proxy(self):
+        urls = set()
+        print("thread #1 started")
+        while True:
+            tmp = self.ParseProxyListOrg()
+            urls |= tmp
+
+            tmp = self.parseXseoIn()
+            urls |= tmp
+
+            tmp = self.ParseSslProxies()
+            urls |= tmp
+
+            tmp = self.ParseGatherproxy()
+            urls |= tmp
+
+            tmp = self.ParseHideMyIp()
+            urls |= tmp
+
+
+            print("Loaded ", len(urls), " proxy")
+
+            # self.__locker.acquire()
+            conn = sqlite3.connect(self.__dbName)
+            self.__processProxyList(urls, conn)
+            # self.__locker.release()
+
+            # print("sleep for 1 min ...")
+            # time.sleep(60)
+
+            break
+
     def getProxy(self):
         # print("ProxyParser: Request for proxies")
-
-        self.ParseProxyListOrg()
-        self.parseXseoIn()
-        self.ParseSslProxies()
-        self.ParseGatherproxy()
+        # self.loadProxy()
 
         # Select data
-        cur = self.__conn.cursor()
+        # locker.acquire()
+        conn = sqlite3.connect(self.__dbName)
+        cur = conn.cursor()
+        # cur = DbConnector.Instance().handle().cursor()
         cur.execute("SELECT url FROM " + self.__proxyTableName + " WHERE isGood = 1")
         rows = cur.fetchall()
+        # locker.release()
 
         proxyList = list()
         for row in rows:
@@ -251,18 +313,28 @@ class ProxyParser:
         return proxyList
 
     # Mark proxy as bad (not working)
-    def markAsBad(self, url):
-        self.__conn.execute("UPDATE Proxy SET isGood = 0 WHERE url = '"+url+"'")
-        self.__conn.commit()
+    def markAsBad(self, url, conn):
+        # conn = sqlite3.connect(self.__dbName)
+        conn.execute("UPDATE Proxy SET isGood = 0 WHERE url = '"+url+"'")
+        conn.commit()
+
+    def attach_locker(self, locker):
+        self.__locker = locker
+
+
 
 
 
 def main():
     proxyParser = ProxyParser()
-    proxyList = proxyParser.getProxy()
-    # proxyParser.MarkAsBad(proxyList[0])
+    proxyParser.start()
 
-    # print("TROLOL: ", proxyList)
+    print("thread #2 started")
+    proxyParser.join()
+        # proxyList = proxyParser.getProxy()
+        # proxyParser.MarkAsBad(proxyList[0])
 
-main()
+        # print("TROLOL: ", proxyList)
+
+# main()
 

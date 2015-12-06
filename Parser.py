@@ -1,216 +1,201 @@
 import urllib2
 import re
-import httplib
 import time
 from ProxyParser import ProxyParser, DbConnector
 import socket
-
+import sqlite3
 import threading
-import thread
 
-class PseudoLocker:
-    def acquire(self):
-        return
+locker = threading.Lock()
+proxy_loader = ProxyParser()
+proxy_list = list()
+pages_list = list()
 
-    def release(self):
-        return
+def mark_as_bad(curr_proxy, conn):
+    proxy_loader.markAsBad(curr_proxy, conn)
 
-class AzLyrics:
-    __processed = list()
-    __unprocessed = list()
-    __proxyList = list()
-    __conn = ""
-    __dbPath = 'AzLyrics.db'
-    __pagesTable = "Pages"
-    __proxyParser = ProxyParser()
+def get_proxy():
+    global proxy_list
 
-    # __lock = threading.Lock()
-    __lock = PseudoLocker()
+    curr_proxy = ""
+    if len(proxy_list) <= 10:
+        proxy_list = proxy_loader.getProxy()
 
-    # Open DB and get Processed and unprocessed URLs from it. Also prepare proxylist
-    def __init__(self):
-        self.__conn = DbConnector.Instance().handle()
-        # self.fillProxyList()
-        self.getPages()
+    if len(proxy_list) > 0:
+        curr_proxy = proxy_list[0]
+        proxy_list.remove(curr_proxy)
 
-    def getPages(self):
-        cur = self.__conn.cursor()
-        cur.execute("SELECT url, isProcessed FROM " + self.__pagesTable + " WHERE isProcessed = 0 LIMIT 25")
+    return curr_proxy
+
+
+def return_proxy(curr_proxy):
+    global proxy_list
+    proxy_list.append(curr_proxy)
+
+
+
+###############################
+def get_pages(conn):
+    global  pages_list
+
+    if len(pages_list) == 0:
+        cur = conn.cursor()
+        query = "SELECT url, isProcessed FROM Pages WHERE isProcessed = 0"
+
+        cur.execute(query)
         rows = cur.fetchall()
 
-        # clear before using
-        self.__unprocessed = list()
-        self.__processed = list()
+        pages_list = list()
 
         for row in rows:
-            if row[1] == 0 or row[1] == None:
-                self.__unprocessed.append(row[0])
-            else:
-                self.__processed.append(row[0])
+            pages_list.append(row[0])
 
         print("--------------------------------------------")
-        print("Processed URLs count: ", len(self.__processed))
-        print("Unprocessed URLs count: ", len(self.__unprocessed))
+        print("Unprocessed URLs count: ", len(pages_list))
         print("--------------------------------------------")
 
-    # def Start(self):
-        # Create two threads as follows
-        # try:
-           # thread.start_new_thread( self.processUrls, (self, "Thread 1") )
-           # thread.start_new_thread( self.processUrls, ("Thread 2") )
-           #  thread1 = threading.Thread(self.processUrls, ("Thread #1")).start()
+    curr_page = ""
+    if len(pages_list) > 0:
+        curr_page = pages_list[0]
+        pages_list.remove(curr_page)
+    return curr_page
 
-        # except:
-        #    print "Error: unable to start thread"
+def mark_page(currUrl, status, conn):
+    conn.execute("UPDATE Pages SET isProcessed = "+ str(status) +" WHERE url = '"+currUrl+"'")
+    conn.commit()
 
-    def fillProxyList(self):
-        self.__lock.acquire()
-        self.__proxyList = self.__proxyParser.getProxy()
-        self.__lock.release()
+
+#############################################3
+
+class AzLyrics(threading.Thread):
+    __dbName = 'AzLyrics.db'
+    __pagesTable = "Pages"
+
+    # Open DB and get Processed and unprocessed URLs from it. Also prepare proxylist
+    def __init__(self, limits):
+        threading.Thread.__init__(self)
 
     # Main loop of parsing site. It takes next URL from unprocessed list and processing it.
-    def processUrls(self):
-        print("Hello I'm thread")
-        print(threading.currentThread())
-        time.sleep(2)
+    def run(self):
+        global locker
 
-        conn = self.__conn
-        i = 0
-        j = 0
+        locker.acquire()
+        conn = sqlite3.connect(self.__dbName)
+        locker.release()
 
-        # timeout in seconds
-        timeout = 10
+        need_new_page = True
+        timeout = 10 # timeout in seconds
         socket.setdefaulttimeout(timeout)
+        currUrl = ""
 
-        while len(self.__unprocessed) > 0:
-            if i >= len(self.__proxyList):
-                i = 0
+        # if unprocessed URL(s) exist - process they
+        while True:
+            # get proxy and page for processing
+            locker.acquire()
+            if need_new_page:
+                currUrl = get_pages(conn)
+            currProxy = get_proxy()
+            locker.release()
 
-            if j >= len(self.__unprocessed):
-                j = 0
+            if currUrl == "":
+                print("Have no URL(s) for processing")
+                break
 
-            if len(self.__unprocessed) <= 1:
-                self.getPages()
-                self.fillProxyList()
-                print("Proxies count: ", len(self.__proxyList))
-
-            while len(self.__proxyList) == 0:
-                print("Proxy list is empty. Trying to load fresh proxies")
-                self.fillProxyList()
-                if len(self.__proxyList) == 0:
-                    print("PROXY LOADING FAILED: sleep for 5 min.")
-                    time.sleep(300)  # sleep 5 seconds and try again
-
-            self.__lock.acquire()
-            currUrl = self.__unprocessed[j]
-            currProxy = self.__proxyList[i]
-            self.__lock.release()
-
+            # set proxy
             proxy = urllib2.ProxyHandler({'http': currProxy})
             opener = urllib2.build_opener(proxy)
             urllib2.install_opener(opener)
 
-            print("[" + time.strftime("%H:%M:%S") + "] [#" + str(i) + "] Start processing URL: ", currUrl)
+            # trace info
+            print("[" +str(threading.currentThread())+ "] [" + time.strftime("%H:%M:%S") + "] "
+                  "["+str(currProxy)+"] [" + currUrl + "]")
             rawdata = ""
             badProxy = True
 
             try:
-                print("--------Current proxy: ", currProxy)
-
-                self.__lock.acquire()
+                start_point = time.time()
                 response = urllib2.urlopen(currUrl)
-                self.__lock.release()
+                end_point = time.time()
 
-                rawdata = response.read()
-                badProxy = False
+                # To slowwww
+                if end_point - start_point > 20:
+                    print("Timeout ...")
+                    badProxy = True
+                else:
+                    rawdata = response.read()
+                    badProxy = False
 
             except urllib2.HTTPError, e:
                 print('HTTPError = ' + str(e.code))
                 if e.code == 404:
-                    i += 1
-                    print("URL MARKED AS 404 ---->>>>")
-                    # conn.execute("UPDATE "+ self.__pagesTable +" SET isProcessed=404 WHERE url = '"+currUrl+"'")
-                    # conn.commit()
-                    # self.__unprocessed.remove(currUrl)
-                    self.markUrl(currUrl, 404)
+                    locker.acquire()
+                    mark_page(currUrl, 404, conn)
+                    return_proxy(currProxy)
+                    locker.release()
+
+                    need_new_page = True
                     continue
 
             except Exception:
-                print('generic exception: ')
+                badProxy = True
 
             if badProxy == True:
                 print("--==BAD PROXY==--")
-                self.__lock.acquire()
-                self.__proxyParser.markAsBad(currProxy)
-                self.__proxyList.remove(currProxy)
-                self.__lock.release()
+                locker.acquire()
+                mark_as_bad(currProxy, conn)
+                locker.release()
 
-                continue #try to process this URL again
-
-            self.markUrl(currUrl, 1)
-
-            if rawdata == "":
-                print("Page not loaded! Skip it and move forward ->")
+                need_new_page = False
                 continue
 
+            need_new_page = True
+
+            locker.acquire()
+            return_proxy(currProxy)
+            mark_page(currUrl, 1, conn)
+            locker.release()
+
+            if rawdata == "":
+                print("Page not loaded! Skip it and move forward ---->")
+                continue
+
+            # search lyrics and other URL(s) on this page
             urls = self.parseUrls(rawdata)
             author = self.__parseAuthor(rawdata)
             songName = self.__parseSongName(rawdata)
             lyrics = self.__parseLyrics(rawdata)
 
-            self.addUniqueUrls(urls)
-            self.insertLyrics(author, songName, lyrics)
+            locker.acquire()
+            self.addUniqueUrls(urls, conn)
+            self.insertLyrics(author, songName, lyrics, conn)
 
             conn.commit()
+            locker.release()
 
-            j += 1
-            i += 1
 
-    def markUrl(self, currUrl, status):
-        conn = self.__conn
+        print("Thread ", threading.currentThread(), " has finished work")
 
-        self.__lock.acquire()
-        self.__unprocessed.remove(currUrl)
-        self.__processed.append(currUrl)
-        conn.execute("UPDATE "+ self.__pagesTable +" SET isProcessed = "+ str(status) +" WHERE url = '"+currUrl+"'")
-        conn.commit()
-        self.__lock.release()
-
-    def addUniqueUrls(self, urls):
+    # update URL(s) list
+    def addUniqueUrls(self, urls, conn):
         if len(urls) == 0:
             return
 
-        conn = self.__conn
         unique = 0
-
-        self.__lock.acquire()
+        # Page already in table if exception, otherwise - all is ok
         for url in urls:
             try:
-                if url not in self.__processed and url not in self.__unprocessed:
-                    self.__unprocessed.append(url)
-                    conn.execute("INSERT INTO "+ self.__pagesTable +" (url, isProcessed) "
-                                                                           "VALUES ('" + url + "', 0)")
-                    unique += 1
+                conn.execute("INSERT INTO "+ self.__pagesTable +" (url, isProcessed) "
+                                                          "VALUES ('" + url + "', 0)")
+                unique += 1
             except Exception:
                 print("URL ", url, " already exists in DB")
-
-        self.__lock.release()
         print("Found " + str(len(urls)) + " unique URL(s)")
 
 
-    def insertLyrics(self, author, songName, lyrics):
+    # insert lyrics to DB (only unique lyrics will be inserted)
+    def insertLyrics(self, author, songName, lyrics, conn):
         if author == "" or songName == "" or lyrics == "":
             return
-
-        # print("Author: ", author)
-        # print("Song name: ", songName)
-        # print("Lyrics: ", lyrics)
-        # print(urls)
-
-        print("!!!Lyrics found!!!")
-        conn = self.__conn
-
-        self.__lock.acquire()
 
         request = 'SELECT _id FROM Lyrics WHERE band = "'+author+'" AND  song = "'+songName+'"'
         cur = conn.cursor()
@@ -218,27 +203,14 @@ class AzLyrics:
         rows = cur.fetchall()
         if len(rows) == 0:
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-            request = 'insert into Lyrics (band, song, lyrics, timestamp) ' \
-                      'values ("'+author+'","'+songName+'","'+lyrics+'", "'+timestamp+'")'
+            request = 'INSERT INTO Lyrics (band, song, lyrics, timestamp) ' \
+                      'VALUES ("'+author+'","'+songName+'","'+lyrics+'", "'+timestamp+'")'
             conn.execute(request)
         else:
             print("UPS: Song already exists")
 
-        self.__lock.release()
-
-
-    def firstInit(self):
-        base = "http://www.azlyrics.com/"
-        letters = 'abcdefghijklmnopqrstuvwxyz'
-        for char in letters:
-            url = base + char + ".html"
-            self.__conn.execute("INSERT INTO UnprocessedUrls (url) VALUES ('" + url + "')")
-        self.__conn.commit()
-
-
-
     ################################################
-        # Parse lyrics from raw html data
+    # Parse lyrics from raw html data
     def __parseLyrics(self, html):
         startSong = "<!-- Usage of azlyrics.com content by any third-party lyrics provider is prohibited by our licensing agreement. Sorry about that. -->"
         endSong = "</div>"
@@ -335,36 +307,47 @@ class AzLyrics:
         return songs
 
     ################################################
-    def Test(self):
-        print("ssdf")
+
 
 def main():
-    lyrics = AzLyrics()
-    lyrics.processUrls()
+    global proxy_loader
+    startId = 1
+    endId = 200000
 
-    # try:
-        # th1 = threading.Thread(target=lyrics.processUrls(), args=())
-        # th2 = threading.Thread(target=lyrics.Test(), args=())
-        # th2 = threading.Thread(target=lyrics.processUrls(), args=())
-        #
-        # th2.start()
-        # th1.start()
-        # th1.join()
-        # th2.join()
-    #     pass
-    # except:
-    #    print "Error: unable to start thread"
+    conn = sqlite3.connect("AzLyrics.db")
+    cur = conn.cursor()
+
+    cur.execute('SELECT _id FROM Pages WHERE isProcessed = 0 LIMIT 1')
+    rows = cur.fetchall()
+    if len(rows) == 0:
+        startId = rows[0]
+
+    cur.execute('SELECT _id FROM Pages WHERE isProcessed = 0 ORDER BY _id DESC LIMIT 1')
+    rows = cur.fetchall()
+    if len(rows) == 0:
+        endId = rows[0]
+
+
+    threads = 6
+    count_of_url = (endId - startId) / threads
+
+    workers = []
+    for i in range(1, threads+1):
+        j = i + 1
+        worker = AzLyrics((i*count_of_url, j*count_of_url))
+        worker.start()
+        workers.append(worker)
+
+    # proxy_loader = ProxyParser()
+    # proxy_loader.attach_locker(locker)
+    # proxy_loader.start()
+
+    while True:
+        print("[" +str(threading.currentThread())+ "] [SLEEP FOR 2.5 MIN]")
+        time.sleep(60)
+        locker.acquire()
+        proxy_loader.parse_proxy()
+        locker.release()
 
 
 main()
-
-
-import threading
-
-def foo(a, b):
-    print(threading.currentThread())
-    print("I'm thread")
-    pass
-
-# threading.Thread(target=foo, args=("some", "args")).start()
-# threading.Thread(target=foo, args=("some", "args")).start()
